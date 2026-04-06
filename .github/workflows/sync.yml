@@ -1,0 +1,128 @@
+name: Sync Upstream and Deploy to CF Worker
+
+on:
+  schedule:
+    - cron: "34 4 * * *"   # 北京时间 每天12:34
+  workflow_dispatch:       # 可手动触发
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          set -e
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/byJoey/cfnew.git
+          git fetch upstream main
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          set -e
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "✅ No new commits from upstream."
+            echo "upstream_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "⬆️ Found new commits, syncing..."
+            echo "upstream_changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sync upstream changes (safe file backup)
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          echo "🔄 Syncing upstream changes but keeping local workflows..."
+          
+          git fetch upstream main
+          git checkout main
+          
+          # 临时备份 workflow
+          mkdir -p /tmp/workflows_backup
+          cp -r .github/workflows/* /tmp/workflows_backup/ || true
+          
+          git reset --hard upstream/main
+          
+          # 恢复 workflow
+          mkdir -p .github/workflows
+          cp -r /tmp/workflows_backup/* .github/workflows/ || true
+          
+          git add .github/workflows || true
+          git commit -m "Preserve local workflows after upstream sync" || true
+
+      - name: Push changes back to fork
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          echo "⚙️ Forcing push to fork..."
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git main --force
+
+      - name: Deploy to Cloudflare Worker
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          FILE_PATH="少年你相信光吗"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "❌ Source file not found: $FILE_PATH"
+            exit 1
+          fi
+
+          echo "✅ Found source file: $FILE_PATH"
+          
+          cp "$FILE_PATH" index.js
+          
+          # 创建包含 KV 绑定和环境变量的 wrangler.toml
+          cat > wrangler.toml <<EOF
+          name = "${{ secrets.CF_WORKER_NAME }}"
+          main = "index.js"
+          compatibility_date = "2026-01-20" # 兼容日期
+          account_id = "${{ secrets.CF_ACCOUNT_ID }}"
+
+          # KV 命名空间绑定
+          [[kv_namespaces]]
+          binding = "C"               # KV 绑定变量名称
+          id = "${{ vars.FREE_KV_ID }}"  # KV 命名空间 ID
+
+          # 环境变量
+          [vars]
+          u = "${{ vars.u }}"
+          ev = "yes"         # 启用 vless
+          et = "yes"         # 启用 trojan
+          ex = "yes"         # 启动 xhttp
+          wk = "SG"          # 地区
+          ech = "yes"        # 启用ECH
+          dkby = "yes"       # 仅TLS节点
+          ispMobile = "yes"  # 启用移动原生ip
+          ispUnicom = "yes"  # 启用联通原生ip
+          ispTelecom = "yes" # 启用电信原生ip
+          rm = "no"          # 关闭地区匹配
+          # 优选ip列表
+          yx = "103.21.244.224:443#🇸🇬 新加坡,103.21.244.152:443#🇸🇬 新加坡,103.21.244.252:443#🇸🇬 新加坡,103.21.244.157:443#🇸🇬 新加坡,103.21.244.90:443#🇸🇬 新加坡,103.21.244.23:443#🇸🇬 新加坡,103.21.244.48:443#🇸🇬 新加坡,103.21.244.127:443#🇸🇬 新加坡,103.21.244.190:443#🇸🇬 新加坡,103.21.244.54:443#🇸🇬 新加坡,103.21.244.148:443#🇸🇬 新加坡,104.16.222.237:443#🇸🇬 新加坡,103.21.244.204:443#🇸🇬 新加坡,103.21.244.167:443#🇸🇬 新加坡,103.21.244.106:443#🇸🇬 新加坡,103.21.244.64:443#🇸🇬 新加坡,103.21.244.33:443#🇸🇬 新加坡,103.21.244.31:443#🇸🇬 新加坡,103.21.244.136:443#🇸🇬 新加坡,104.18.121.97:443#🇸🇬 新加坡,104.19.65.146:443#🇸🇬 新加坡,104.19.63.227:443#🇸🇬 新加坡,104.21.205.34:443#🇸🇬 新加坡,103.21.244.86:443#🇸🇬 新加坡,104.17.49.174:443#🇸🇬 新加坡,103.21.244.123:443#🇸🇬 新加坡,103.21.244.56:443#🇸🇬 新加坡,104.24.136.125:443#🇸🇬 新加坡,104.17.74.193:443#🇸🇬 新加坡,103.21.244.22:443#🇸🇬 新加坡,103.21.244.73:443#🇸🇬 新加坡,104.16.33.254:443#🇸🇬 新加坡,103.21.244.204:443#🇸🇬 新加坡,104.24.39.70:443#🇸🇬 新加坡,104.25.17.178:443#🇸🇬 新加坡,103.21.244.4:443#🇸🇬 新加坡,104.24.166.175:443#🇸🇬 新加坡,103.21.244.122:443#🇸🇬 新加坡,103.21.244.193:443#🇸🇬 新加坡,103.21.244.123:443#🇸🇬 新加坡,103.21.244.150:443#🇸🇬 新加坡,103.21.244.205:443#🇸🇬 新加坡,104.16.77.133:443#🇸🇬 新加坡,104.16.74.104:443#🇸🇬 新加坡,103.21.244.233:443#🇸🇬 新加坡,103.21.244.196:443#🇸🇬 新加坡,103.21.244.61:443#🇸🇬 新加坡,104.21.107.133:443#🇸🇬 新加坡,104.20.24.91:443#🇸🇬 新加坡,104.21.215.220:443#🇸🇬 新加坡,103.21.244.51:443#🇸🇬 新加坡,103.21.244.217:443#🇸🇬 新加坡,104.16.187.36:443#🇸🇬 新加坡,103.21.244.188:443#🇸🇬 新加坡,104.17.5.61:443#🇸🇬 新加坡,104.18.224.45:443#🇸🇬 新加坡,104.21.236.161:443#🇸🇬 新加坡,104.17.246.121:443#🇸🇬 新加坡,104.17.234.24:443#🇸🇬 新加坡,104.25.170.28:443#🇸🇬 新加坡,104.27.61.237:443#🇸🇬 新加坡,104.24.227.207:443#🇸🇬 新加坡,103.21.244.123:443#🇸🇬 新加坡,104.18.254.137:443#🇸🇬 新加坡,104.17.220.188:443#🇸🇬 新加坡,103.21.244.239:443#🇸🇬 新加坡,103.21.244.62:443#🇸🇬 新加坡,103.21.244.202:443#🇸🇬 新加坡,103.21.244.58:443#🇸🇬 新加坡,104.27.64.132:443#🇸🇬 新加坡,104.18.10.94:443#🇸🇬 新加坡,104.21.91.140:443#🇸🇬 新加坡,104.18.143.90:443#🇸🇬 新加坡,103.21.244.227:443#🇸🇬 新加坡,103.21.244.227:443#🇸🇬 新加坡,104.20.21.65:443#🇸🇬 新加坡,103.21.244.25:443#🇸🇬 新加坡,103.21.244.163:443#🇸🇬 新加坡,103.21.244.53:443#🇸🇬 新加坡,103.21.244.18:443#🇸🇬 新加坡,104.16.44.30:443#🇸🇬 新加坡,104.25.237.10:443#🇸🇬 新加坡,104.27.62.183:443#🇸🇬 新加坡,104.25.83.158:443#🇸🇬 新加坡,104.25.224.255:443#🇸🇬 新加坡,104.16.169.34:443#🇸🇬 新加坡,141.101.120.1:443#🇸🇬 新加坡,104.25.79.93:443#🇸🇬 新加坡,104.18.28.189:443#🇸🇬 新加坡,104.19.234.208:443#🇸🇬 新加坡,104.25.213.78:443#🇸🇬 新加坡,104.25.157.231:443#🇸🇬 新加坡,104.19.141.120:443#🇸🇬 新加坡,104.27.32.31:443#🇸🇬 新加坡,103.21.244.72:443#🇸🇬 新加坡,104.19.149.207:443#🇸🇬 新加坡,103.21.244.153:443#🇸🇬 新加坡,103.21.244.233:443#🇸🇬 新加坡,104.24.12.134:443#🇸🇬 新加坡,104.18.46.94:443#🇸🇬 新加坡,103.21.244.91:443#🇸🇬 新加坡,104.18.146.169:443#🇸🇬 新加坡,104.25.245.223:443#🇸🇬 新加坡,104.24.49.107:443#🇸🇬 新加坡,104.17.50.122:443#🇸🇬 新加坡,104.19.99.95:443#🇸🇬 新加坡,104.16.68.14:443#🇸🇬 新加坡,104.24.137.14:443#🇸🇬 新加坡,103.21.244.89:443#🇸🇬 新加坡,103.21.244.148:443#🇸🇬 新加坡,103.21.244.16:443#🇸🇬 新加坡,104.17.165.94:443#🇸🇬 新加坡,104.24.57.225:443#🇸🇬 新加坡,104.17.250.97:443#🇸🇬 新加坡,104.25.224.12:443#🇸🇬 新加坡,103.21.244.41:443#🇸🇬 新加坡,104.16.156.204:443#🇸🇬 新加坡,103.21.244.68:443#🇸🇬 新加坡,103.21.244.141:443#🇸🇬 新加坡,103.21.244.176:443#🇸🇬 新加坡,103.21.244.99:443#🇸🇬 新加坡,103.21.244.162:443#🇸🇬 新加坡,104.17.245.99:443#🇸🇬 新加坡,103.21.244.68:443#🇸🇬 新加坡,104.25.28.144:443#🇸🇬 新加坡,104.25.60.72:443#🇸🇬 新加坡,104.19.13.20:443#🇸🇬 新加坡,104.25.220.232:443#🇸🇬 新加坡,104.19.172.223:443#🇸🇬 新加坡,104.25.151.104:443#🇸🇬 新加坡,104.18.219.119:443#🇸🇬 新加坡,103.21.244.73:443#🇸🇬 新加坡,103.21.244.190:443#🇸🇬 新加坡"
+          EOF
+
+          echo "🚀 Deploying to Cloudflare Worker..."
+          npx wrangler deploy --no-bundle
+          
+          rm index.js wrangler.toml
+          echo "✅ Deployment complete."
+
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
