@@ -1,0 +1,128 @@
+name: Sync Upstream and Deploy to CF Worker[JP]
+
+on:
+  schedule:
+    - cron: "57 5 * * *"   # 北京时间 每天13:57
+  workflow_dispatch:       # 可手动触发
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream and fetch
+        run: |
+          set -e
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/JiangZhiyan00/cfnew.git
+          git fetch upstream main
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          set -e
+          LOCAL=$(git rev-parse HEAD)
+          REMOTE=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$REMOTE" ]; then
+            echo "✅ No new commits from upstream."
+            echo "upstream_changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "⬆️ Found new commits, syncing..."
+            echo "upstream_changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sync upstream changes (safe file backup)
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          echo "🔄 Syncing upstream changes but keeping local workflows..."
+          
+          git fetch upstream main
+          git checkout main
+          
+          # 临时备份 workflow
+          mkdir -p /tmp/workflows_backup
+          cp -r .github/workflows/* /tmp/workflows_backup/ || true
+          
+          git reset --hard upstream/main
+          
+          # 恢复 workflow
+          mkdir -p .github/workflows
+          cp -r /tmp/workflows_backup/* .github/workflows/ || true
+          
+          git add .github/workflows || true
+          git commit -m "Preserve local workflows after upstream sync" || true
+
+      - name: Push changes back to fork
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          echo "⚙️ Forcing push to fork..."
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git main --force
+
+      - name: Deploy to Cloudflare Worker
+        if: steps.check.outputs.upstream_changed == 'true'
+        run: |
+          set -e
+          FILE_PATH="少年你相信光吗"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "❌ Source file not found: $FILE_PATH"
+            exit 1
+          fi
+
+          echo "✅ Found source file: $FILE_PATH"
+          
+          cp "$FILE_PATH" index.js
+          
+          # 创建包含 KV 绑定和环境变量的 wrangler.toml
+          cat > wrangler.toml <<EOF
+          name = "${{ secrets.CF_WORKER_NAME }}"
+          main = "index.js"
+          compatibility_date = "2026-01-20"
+          account_id = "${{ secrets.CF_ACCOUNT_ID }}"
+
+          # KV 命名空间绑定
+          [[kv_namespaces]]
+          binding = "C"               # KV 绑定变量名称
+          id = "${{ vars.FREE_KV_ID }}"  # KV 命名空间 ID
+
+          # 环境变量
+          [vars]
+          u = "${{ vars.u }}"
+          ev = "yes"         # 启用 vless
+          et = "yes"         # 启用 trojan
+          ex = "yes"         # 启动 xhttp
+          wk = "JP"          # 地区
+          ech = "yes"        # 启用ECH
+          dkby = "yes"       # 仅TLS节点
+          ispMobile = "yes"  # 启用移动原生ip
+          ispUnicom = "yes"  # 启用联通原生ip
+          ispTelecom = "yes" # 启用电信原生ip
+          rm = "no"          # 关闭地区匹配
+          # 优选ip列表
+          yx = "103.21.244.35:443#🇯🇵 东京,103.21.244.35:443#🇯🇵 东京,104.18.168.241:443#🇯🇵 东京,104.16.253.74:443#🇯🇵 东京,104.25.39.43:443#🇯🇵 东京,104.16.72.229:443#🇯🇵 东京,104.16.96.106:443#🇯🇵 东京,104.16.221.99:443#🇯🇵 东京,104.19.169.31:443#🇯🇵 东京,104.24.53.129:443#🇯🇵 东京,103.21.244.139:443#🇯🇵 东京,103.21.244.161:443#🇯🇵 东京,103.21.244.28:443#🇯🇵 东京,103.21.244.249:443#🇯🇵 东京,104.19.62.89:443#🇯🇵 东京,103.21.244.46:443#🇯🇵 东京,104.19.143.204:443#🇯🇵 东京,103.21.244.248:443#🇯🇵 东京,104.19.47.222:443#🇯🇵 东京,104.20.5.183:443#🇯🇵 东京,104.19.255.241:443#🇯🇵 东京,104.17.230.52:443#🇯🇵 东京,104.18.2.230:443#🇯🇵 东京,103.21.244.145:443#🇯🇵 东京,104.16.33.195:443#🇯🇵 东京,104.16.215.221:443#🇯🇵 东京,104.17.184.226:443#🇯🇵 东京,104.18.12.124:443#🇯🇵 东京,103.21.244.39:443#🇯🇵 东京,104.24.67.110:443#🇯🇵 东京,104.24.202.173:443#🇯🇵 东京,104.17.120.33:443#🇯🇵 东京,104.21.202.41:443#🇯🇵 东京,104.25.217.45:443#🇯🇵 东京,104.24.208.7:443#🇯🇵 东京,103.21.244.36:443#🇯🇵 东京,104.16.105.47:443#🇯🇵 东京,104.16.79.70:443#🇯🇵 东京,103.21.244.85:443#🇯🇵 东京,103.21.244.203:443#🇯🇵 东京,104.18.237.211:443#🇯🇵 东京,104.19.100.167:443#🇯🇵 东京,103.21.244.135:443#🇯🇵 东京,104.17.90.195:443#🇯🇵 东京,103.21.244.177:443#🇯🇵 东京,104.24.176.26:443#🇯🇵 东京,104.21.34.44:443#🇯🇵 东京,104.18.170.248:443#🇯🇵 东京,103.21.244.141:443#🇯🇵 东京,103.21.244.149:443#🇯🇵 东京,103.21.244.175:443#🇯🇵 东京,103.21.244.101:443#🇯🇵 东京,103.21.244.10:443#🇯🇵 东京,103.21.244.137:443#🇯🇵 东京,103.21.244.0:443#🇯🇵 东京,103.21.244.199:443#🇯🇵 东京,103.21.244.98:443#🇯🇵 东京,103.21.244.120:443#🇯🇵 东京,103.21.244.60:443#🇯🇵 东京,104.18.211.34:443#🇯🇵 东京,103.21.244.181:443#🇯🇵 东京,103.21.244.90:443#🇯🇵 东京,103.21.244.116:443#🇯🇵 东京,104.16.102.191:443#🇯🇵 东京,104.20.1.38:443#🇯🇵 东京,104.19.232.2:443#🇯🇵 东京,104.24.196.37:443#🇯🇵 东京,104.17.103.48:443#🇯🇵 东京,104.17.35.49:443#🇯🇵 东京,103.21.244.254:443#🇯🇵 东京,104.19.19.197:443#🇯🇵 东京,104.24.180.14:443#🇯🇵 东京,104.17.18.199:443#🇯🇵 东京,103.21.244.133:443#🇯🇵 东京,104.19.85.119:443#🇯🇵 东京,103.21.244.81:443#🇯🇵 东京,103.21.244.227:443#🇯🇵 东京,103.21.244.89:443#🇯🇵 东京,103.21.244.99:443#🇯🇵 东京,103.21.244.36:443#🇯🇵 东京,103.21.244.199:443#🇯🇵 东京,103.21.244.227:443#🇯🇵 东京,104.16.106.193:443#🇯🇵 东京,103.21.244.200:443#🇯🇵 东京,104.19.128.165:443#🇯🇵 东京,104.18.215.34:443#🇯🇵 东京,103.21.244.13:443#🇯🇵 东京,104.17.0.91:443#🇯🇵 东京,103.21.244.241:443#🇯🇵 东京,103.21.244.53:443#🇯🇵 东京,103.21.244.29:443#🇯🇵 东京,103.21.244.134:443#🇯🇵 东京"
+          EOF
+
+          echo "🚀 Deploying to Cloudflare Worker..."
+          npx wrangler deploy --no-bundle
+          
+          rm index.js wrangler.toml
+          echo "✅ Deployment complete."
+
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
